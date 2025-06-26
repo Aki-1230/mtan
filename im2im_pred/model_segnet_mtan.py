@@ -17,22 +17,32 @@ opt = parser.parse_args()
 
 class SegNet(nn.Module):
     def __init__(self):
+        """
+        Parameters:
+            encoder_block (nn.ModuleList) -- construct the backbone, store the conv layers which increase dimension in VGG
+            conv_block_enc (nn.ModuleList) -- construct the backbone, store the conv layers which not increase dimension and size in VGG
+            encoder_att (nn.ModuleList of nn.ModuleList, 3*5) -- nested ModuleList, 3*5, 3 for 3 tasks, 5 for 5 att blocks.
+            encoder_block_att (nn.ModuleList) -- define the kenerl 3 conv layers in each att block, increase dimension
+    
+        """
         super(SegNet, self).__init__()
         # initialise network parameters
         filter = [64, 128, 256, 512, 512]
         self.class_nb = 13
 
         # define encoder decoder layers
-        self.encoder_block = nn.ModuleList([self.conv_layer([3, filter[0]])])
-        self.decoder_block = nn.ModuleList([self.conv_layer([filter[0], filter[0]])])
+        self.encoder_block = nn.ModuleList([self.conv_layer([3, filter[0]])]) # nc: 3 -> 64, conv + bn + relu
+        self.decoder_block = nn.ModuleList([self.conv_layer([filter[0], filter[0]])]) #nc: 64 -> 64, conv + bn + relu
+
         for i in range(4):
-            self.encoder_block.append(self.conv_layer([filter[i], filter[i + 1]]))
+            self.encoder_block.append(self.conv_layer([filter[i], filter[i + 1]])) # VGG中每个conv block中的第一层conv(通道数翻倍的)
             self.decoder_block.append(self.conv_layer([filter[i + 1], filter[i]]))
 
         # define convolution layer
-        self.conv_block_enc = nn.ModuleList([self.conv_layer([filter[0], filter[0]])])
+        self.conv_block_enc = nn.ModuleList([self.conv_layer([filter[0], filter[0]])]) 
         self.conv_block_dec = nn.ModuleList([self.conv_layer([filter[0], filter[0]])])
         for i in range(4):
+            # 定义每个conv block中尺度通道数均不变的conv layer
             if i == 0:
                 self.conv_block_enc.append(self.conv_layer([filter[i + 1], filter[i + 1]]))
                 self.conv_block_dec.append(self.conv_layer([filter[i], filter[i]]))
@@ -43,16 +53,19 @@ class SegNet(nn.Module):
                                                          self.conv_layer([filter[i], filter[i]])))
 
         # define task attention layers
-        self.encoder_att = nn.ModuleList([nn.ModuleList([self.att_layer([filter[0], filter[0], filter[0]])])])
+        self.encoder_att = nn.ModuleList([nn.ModuleList([self.att_layer([filter[0], filter[0], filter[0]])])]) # 嵌套modulelist
         self.decoder_att = nn.ModuleList([nn.ModuleList([self.att_layer([2 * filter[0], filter[0], filter[0]])])])
         self.encoder_block_att = nn.ModuleList([self.conv_layer([filter[0], filter[1]])])
         self.decoder_block_att = nn.ModuleList([self.conv_layer([filter[0], filter[0]])])
 
         for j in range(3):
+            # 定义attention模块中的两个 1x1 conv layer
             if j < 2:
+                # 定义第 2, 3 任务的 第一个 attention block
                 self.encoder_att.append(nn.ModuleList([self.att_layer([filter[0], filter[0], filter[0]])]))
                 self.decoder_att.append(nn.ModuleList([self.att_layer([2 * filter[0], filter[0], filter[0]])]))
             for i in range(4):
+                # 定义第 2-5 个attention block
                 self.encoder_att[j].append(self.att_layer([2 * filter[i + 1], filter[i + 1], filter[i + 1]]))
                 self.decoder_att[j].append(self.att_layer([filter[i + 1] + filter[i], filter[i], filter[i]]))
 
@@ -64,17 +77,17 @@ class SegNet(nn.Module):
                 self.encoder_block_att.append(self.conv_layer([filter[i + 1], filter[i + 1]]))
                 self.decoder_block_att.append(self.conv_layer([filter[i + 1], filter[i + 1]]))
 
-        self.pred_task1 = self.conv_layer([filter[0], self.class_nb], pred=True)
-        self.pred_task2 = self.conv_layer([filter[0], 1], pred=True)
-        self.pred_task3 = self.conv_layer([filter[0], 3], pred=True)
+        self.pred_task1 = self.conv_layer([filter[0], self.class_nb], pred=True) # 分割
+        self.pred_task2 = self.conv_layer([filter[0], 1], pred=True)             # 深度
+        self.pred_task3 = self.conv_layer([filter[0], 3], pred=True)             # 法线
 
         # define pooling and unpooling functions
         self.down_sampling = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=True)
         self.up_sampling = nn.MaxUnpool2d(kernel_size=2, stride=2)
 
-        self.logsigma = nn.Parameter(torch.FloatTensor([-0.5, -0.5, -0.5]))
+        self.logsigma = nn.Parameter(torch.FloatTensor([-0.5, -0.5, -0.5])) # uncertainty weight's param
 
-        for m in self.modules():
+        for m in self.modules():   # 权重初始化
             if isinstance(m, nn.Conv2d):
                 nn.init.xavier_normal_(m.weight)
                 nn.init.constant_(m.bias, 0)
@@ -111,6 +124,13 @@ class SegNet(nn.Module):
         return att_block
 
     def forward(self, x):
+        '''
+        params:
+            x: input image
+            g_: global?
+
+        
+        '''
         g_encoder, g_decoder, g_maxpool, g_upsampl, indices = ([0] * 5 for _ in range(5))
         for i in range(5):
             g_encoder[i], g_decoder[-i - 1] = ([0] * 2 for _ in range(2))
@@ -121,13 +141,14 @@ class SegNet(nn.Module):
             atten_encoder[i], atten_decoder[i] = ([0] * 5 for _ in range(2))
         for i in range(3):
             for j in range(5):
-                atten_encoder[i][j], atten_decoder[i][j] = ([0] * 3 for _ in range(2))
+                atten_encoder[i][j], atten_decoder[i][j] = ([0] * 3 for _ in range(2))   # shape: [3, 5, 3]
 
         # define global shared network
         for i in range(5):
+            # forward of backbone encoder part
             if i == 0:
-                g_encoder[i][0] = self.encoder_block[i](x)
-                g_encoder[i][1] = self.conv_block_enc[i](g_encoder[i][0])
+                g_encoder[i][0] = self.encoder_block[i](x) # nc 3 -> 64
+                g_encoder[i][1] = self.conv_block_enc[i](g_encoder[i][0]) # 
                 g_maxpool[i], indices[i] = self.down_sampling(g_encoder[i][1])
             else:
                 g_encoder[i][0] = self.encoder_block[i](g_maxpool[i - 1])
@@ -135,6 +156,7 @@ class SegNet(nn.Module):
                 g_maxpool[i], indices[i] = self.down_sampling(g_encoder[i][1])
 
         for i in range(5):
+            # forward of backbone decoder part
             if i == 0:
                 g_upsampl[i] = self.up_sampling(g_maxpool[-1], indices[-i - 1])
                 g_decoder[i][0] = self.decoder_block[-i - 1](g_upsampl[i])
@@ -148,8 +170,8 @@ class SegNet(nn.Module):
         for i in range(3):
             for j in range(5):
                 if j == 0:
-                    atten_encoder[i][j][0] = self.encoder_att[i][j](g_encoder[j][0])
-                    atten_encoder[i][j][1] = (atten_encoder[i][j][0]) * g_encoder[j][1]
+                    atten_encoder[i][j][0] = self.encoder_att[i][j](g_encoder[j][0])    # calculate attention mask
+                    atten_encoder[i][j][1] = (atten_encoder[i][j][0]) * g_encoder[j][1] # element-wise multiplication
                     atten_encoder[i][j][2] = self.encoder_block_att[j](atten_encoder[i][j][1])
                     atten_encoder[i][j][2] = F.max_pool2d(atten_encoder[i][j][2], kernel_size=2, stride=2)
                 else:
