@@ -11,7 +11,7 @@ from resnet import Bottleneck, conv1x1
 class MTANDeepLabv3(nn.Module):
     def __init__(self):
         super(MTANDeepLabv3, self).__init__()
-        backbone = ResnetDilated(resnet.__dict__['resnet50'](pretrained=True))
+        backbone = ResnetDilated(resnet.__dict__['resnet50'](pretrained=True)) # res50 - dilated version
         ch = [256, 512, 1024, 2048]
         
         self.tasks = ['segmentation', 'depth', 'normal']
@@ -20,7 +20,7 @@ class MTANDeepLabv3(nn.Module):
         self.shared_conv = nn.Sequential(backbone.conv1, backbone.bn1, backbone.relu1, backbone.maxpool)
 
         # We will apply the attention over the last bottleneck layer in the ResNet. 
-        self.shared_layer1_b = backbone.layer1[:-1] 
+        self.shared_layer1_b = backbone.layer1[:-1]
         self.shared_layer1_t = backbone.layer1[-1]
 
         self.shared_layer2_b = backbone.layer2[:-1]
